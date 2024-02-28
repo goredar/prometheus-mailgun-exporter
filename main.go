@@ -5,15 +5,16 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
-	"github.com/mailgun/mailgun-go/v3"
+	"github.com/alecthomas/kingpin/v2"
+	"github.com/mailgun/mailgun-go/v4"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/prometheus/common/version"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
-	"github.com/alecthomas/kingpin/v2"
 )
 
 const (
@@ -22,7 +23,10 @@ const (
 
 // Exporter collects metrics from Mailgun's via their API.
 type Exporter struct {
-	mg                   *mailgun.MailgunImpl
+	domains              []string
+	APIKey               string
+	APIBase              string
+	scrapeStart          time.Time
 	up                   *prometheus.Desc
 	acceptedTotal        *prometheus.Desc
 	clickedTotal         *prometheus.Desc
@@ -64,23 +68,21 @@ func prometheusDomainStatsTypeDesc(metric string, help string) *prometheus.Desc 
 
 // NewExporter returns an initialized exporter.
 func NewExporter() *Exporter {
-	// NewMailgunFromEnv requires MG_DOMAIN to get set, even though we don't need it for listing all domains
-	err := os.Setenv("MG_DOMAIN", "dummy")
-	if err != nil {
-		log.Fatal().Err(err).Msgf("%v", err)
+	scrapeDomains := os.Getenv("SCRAPE_DOMAINS")
+	if scrapeDomains == "" {
+		log.Fatal().Msg("required environment variable SCRAPE_DOMAINS not defined")
 	}
 
-	mg, err := mailgun.NewMailgunFromEnv()
-	APIBase, exists := os.LookupEnv("API_BASE")
-	if exists {
-		mg.SetAPIBase(APIBase)
-	}
-	if err != nil {
-		log.Fatal().Err(err).Msgf("%v", err)
+	apiKey := os.Getenv("MG_API_KEY")
+	if apiKey == "" {
+		log.Fatal().Msg("required environment variable MG_API_KEY not defined")
 	}
 
 	return &Exporter{
-		mg: mg,
+		domains:     strings.Split(scrapeDomains, ","),
+		APIKey:      apiKey,
+		APIBase:     os.Getenv("API_BASE"),
+		scrapeStart: time.Now().UTC(),
 		up: prometheus.NewDesc(
 			prometheus.BuildFQName(
 				"mailgun",
@@ -160,41 +162,35 @@ func (e *Exporter) Describe(ch chan<- *prometheus.Desc) {
 // currently ongoing, Collect waits for it to end and then uses its result to
 // collect the metrics.
 func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
-	domains, err := e.listDomains()
-	if err != nil {
-		ch <- prometheus.MustNewConstMetric(e.up, prometheus.GaugeValue, 0)
-		log.Error().Err(err).Msgf("Scrape of Mailgun's API failed: %s", err)
-	}
+	var scrapeOK float64 = 1
 
-	for _, info := range domains {
-		domain := info.Name
-
-		state := 1
-		if info.State != "active" {
-			state = 0
-		}
-		ch <- prometheus.MustNewConstMetric(e.state, prometheus.GaugeValue, float64(state), domain)
-
-		stats, err := getStats(domain)
+	for _, domain := range e.domains {
+		stats, err := e.getStats(domain)
 		if err != nil {
+			ch <- prometheus.MustNewConstMetric(e.state, prometheus.GaugeValue, 0, domain)
 			log.Error().Err(err)
+			scrapeOK = 0
+
+			continue
 		}
 
-		var acceptedTotalIncoming = float64(0)
-		var acceptedTotalOutgoing = float64(0)
-		var clickedTotal = float64(0)
-		var complainedTotal = float64(0)
-		var deliveredHttpTotal = float64(0)
-		var deliveredSmtpTotal = float64(0)
-		var failedPermanentBounce = float64(0)
-		var failedPermanentDelayedBounce = float64(0)
-		var failedPermanentSuppressBounce = float64(0)
-		var failedPermanentSuppressComplaint = float64(0)
-		var failedPermanentSuppressUnsubscribe = float64(0)
-		var failedTemporaryEspblock = float64(0)
-		var openedTotal = float64(0)
-		var storedTotal = float64(0)
-		var unsubscribedTotal = float64(0)
+		ch <- prometheus.MustNewConstMetric(e.state, prometheus.GaugeValue, 1, domain)
+
+		acceptedTotalIncoming := float64(0)
+		acceptedTotalOutgoing := float64(0)
+		clickedTotal := float64(0)
+		complainedTotal := float64(0)
+		deliveredHttpTotal := float64(0)
+		deliveredSmtpTotal := float64(0)
+		failedPermanentBounce := float64(0)
+		failedPermanentDelayedBounce := float64(0)
+		failedPermanentSuppressBounce := float64(0)
+		failedPermanentSuppressComplaint := float64(0)
+		failedPermanentSuppressUnsubscribe := float64(0)
+		failedTemporaryEspblock := float64(0)
+		openedTotal := float64(0)
+		storedTotal := float64(0)
+		unsubscribedTotal := float64(0)
 
 		for _, stat := range stats {
 			acceptedTotalIncoming += float64(stat.Accepted.Incoming)
@@ -291,39 +287,13 @@ func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
 		ch <- prometheus.MustNewConstMetric(e.unsubscribedTotal, prometheus.CounterValue, unsubscribedTotal, domain)
 	}
 
-	ch <- prometheus.MustNewConstMetric(e.up, prometheus.GaugeValue, 1)
+	ch <- prometheus.MustNewConstMetric(e.up, prometheus.GaugeValue, scrapeOK)
 }
 
-func (e *Exporter) listDomains() ([]mailgun.Domain, error) {
-	it := e.mg.ListDomains(nil)
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second*30)
-	defer cancel()
-
-	var page, result []mailgun.Domain
-	for it.Next(ctx, &page) {
-		result = append(result, page...)
-	}
-
-	if it.Err() != nil {
-		return nil, it.Err()
-	}
-	return result, nil
-}
-
-func getStats(domain string) ([]mailgun.Stats, error) {
-	// Since we are using NewMailgunFromEnv, we need to set MG_DOMAIN before fetching stats for said domain
-	err := os.Setenv("MG_DOMAIN", domain)
-	if err != nil {
-		log.Error().Err(err)
-	}
-
-	mg, err := mailgun.NewMailgunFromEnv()
-	APIBase, exists := os.LookupEnv("API_BASE")
-	if exists {
-		mg.SetAPIBase(APIBase)
-	}
-	if err != nil {
-		log.Error().Err(err)
+func (e *Exporter) getStats(domain string) ([]mailgun.Stats, error) {
+	mg := mailgun.NewMailgun(domain, e.APIKey)
+	if e.APIBase != "" {
+		mg.SetAPIBase(e.APIBase)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second*30)
@@ -332,19 +302,23 @@ func getStats(domain string) ([]mailgun.Stats, error) {
 	return mg.GetStats(ctx, []string{
 		"accepted", "clicked", "complained", "delivered", "failed", "opened", "stored", "unsubscribed",
 	}, &mailgun.GetStatOptions{
-		Duration: "240m",
+		Resolution: mailgun.ResolutionHour,
+		Start:      e.scrapeStart,
 	})
 }
 
 func main() {
 	var (
-		listenAddress = kingpin.Flag("web.listen-address", "Address to listen on for web interface and telemetry.").Default(":9616").String()
-		metricsPath   = kingpin.Flag("web.telemetry-path", "Path under which to expose metrics.").Default("/metrics").String()
+		listenAddress = kingpin.Flag("web.listen-address", "Address to listen on for web interface and telemetry.").
+				Default(":9616").
+				String()
+		metricsPath = kingpin.Flag("web.telemetry-path", "Path under which to expose metrics.").
+				Default("/metrics").
+				String()
 	)
 
 	if fileInfo, _ := os.Stdout.Stat(); (fileInfo.Mode() & os.ModeCharDevice) != 0 {
 		log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stderr})
-
 	}
 
 	kingpin.Version(version.Print("prometheus-mailgun-exporter"))
@@ -368,7 +342,8 @@ func main() {
 	http.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	})
-	log.Info().Msgf("Starting HTTP server on listen address %s and metric path %s", *listenAddress, *metricsPath)
+	log.Info().
+		Msgf("Starting HTTP server on listen address %s and metric path %s", *listenAddress, *metricsPath)
 
 	if err := http.ListenAndServe(*listenAddress, nil); err != nil {
 		log.Fatal().Err(err).Msgf("%v", err)
