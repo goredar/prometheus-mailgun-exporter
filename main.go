@@ -69,9 +69,9 @@ func prometheusDomainStatsTypeDesc(metric string, help string) *prometheus.Desc 
 
 // NewExporter returns an initialized exporter.
 func NewExporter() *Exporter {
-	scrapeDomains := os.Getenv("SCRAPE_DOMAINS")
+	scrapeDomains := os.Getenv("MG_DOMAIN")
 	if scrapeDomains == "" {
-		log.Fatal().Msg("required environment variable SCRAPE_DOMAINS not defined")
+		log.Fatal().Msg("required environment variable MG_DOMAIN not defined")
 	}
 
 	apiKey := os.Getenv("MG_API_KEY")
