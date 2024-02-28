@@ -165,6 +165,12 @@ func (e *Exporter) Describe(ch chan<- *prometheus.Desc) {
 func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
 	var scrapeOK float64 = 1
 
+	// Max look behind interval is 30 days (to avoid interference with the data retention)
+	if e.scrapeStart.Before(time.Now().UTC().Add(-30 * 24 * time.Hour)) {
+		log.Info().Msg("Restarting the export start date: max lifetime limit reached")
+		e.scrapeStart = time.Now().UTC()
+	}
+
 	for _, domain := range e.domains {
 		stats, err := e.getStats(domain)
 		if err != nil {

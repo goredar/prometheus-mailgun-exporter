@@ -37,7 +37,7 @@ jobs:
           fi
           IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}
           IMAGE_DH=${GITHUB_REPOSITORY,,}
-          TAGS="$IMAGE:$VERSION,$IMAGE:$PROJECT_VERSION,$IMAGE_DH:$VERSION,$IMAGE_DH:$PROJECT_VERSION"
+          TAGS="$IMAGE:$VERSION,$IMAGE:$PROJECT_VERSION,$IMAGE:latest,$IMAGE_DH:$VERSION,$IMAGE_DH:$PROJECT_VERSION,$IMAGE_DH:latest"
 
           # outputs
           for out in "build-date=$(date +%Y%m%d-%H:%M:%S)" "build-user=$(whoami)" "git-branch=$(git rev-parse --abbrev-ref HEAD)" "git-version=$(git rev-parse HEAD)" "version=${VERSION}" "tags=${TAGS}" "created=$(date -u +'%Y-%m-%dT%H:%M:%SZ')"; do
