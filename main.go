@@ -1,3 +1,4 @@
+// Prometheus Mailgun Exporter
 package main
 
 import (
@@ -180,8 +181,8 @@ func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
 		acceptedTotalOutgoing := float64(0)
 		clickedTotal := float64(0)
 		complainedTotal := float64(0)
-		deliveredHttpTotal := float64(0)
-		deliveredSmtpTotal := float64(0)
+		deliveredHTTPTotal := float64(0)
+		deliveredSMTPTotal := float64(0)
 		failedPermanentBounce := float64(0)
 		failedPermanentDelayedBounce := float64(0)
 		failedPermanentSuppressBounce := float64(0)
@@ -198,8 +199,8 @@ func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
 			clickedTotal += float64(stat.Clicked.Total)
 			complainedTotal += float64(stat.Complained.Total)
 			complainedTotal += float64(stat.Complained.Total)
-			deliveredHttpTotal += float64(stat.Delivered.Http)
-			deliveredSmtpTotal += float64(stat.Delivered.Smtp)
+			deliveredHTTPTotal += float64(stat.Delivered.Http)
+			deliveredSMTPTotal += float64(stat.Delivered.Smtp)
 			failedPermanentBounce += float64(stat.Failed.Permanent.Bounce)
 			failedPermanentDelayedBounce += float64(stat.Failed.Permanent.DelayedBounce)
 			failedPermanentSuppressBounce += float64(stat.Failed.Permanent.SuppressBounce)
@@ -233,13 +234,13 @@ func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
 		ch <- prometheus.MustNewConstMetric(
 			e.deliveredTotal,
 			prometheus.CounterValue,
-			deliveredHttpTotal,
+			deliveredHTTPTotal,
 			domain, "http",
 		)
 		ch <- prometheus.MustNewConstMetric(
 			e.deliveredTotal,
 			prometheus.CounterValue,
-			deliveredSmtpTotal,
+			deliveredSMTPTotal,
 			domain, "smtp",
 		)
 		// End Delivered Total
@@ -329,7 +330,7 @@ func main() {
 
 	prometheus.MustRegister(NewExporter())
 	http.Handle(*metricsPath, promhttp.Handler())
-	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+	http.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
 		w.Write([]byte(`<html>
 			<head><title>Mailgun Exporter</title></head>
             <body>
@@ -339,7 +340,7 @@ func main() {
             </body>
             </html>`))
 	})
-	http.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+	http.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	})
 	log.Info().
